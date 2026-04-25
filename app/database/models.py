@@ -211,6 +211,8 @@ class ScheduleModel(Base):
         DateTime, server_default=func.now(), onupdate=func.now()
     )
 
+    parent_schedule_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
     assignments: Mapped[list[AssignmentModel]] = relationship(
         "AssignmentModel", back_populates="schedule", cascade="all, delete-orphan"
     )

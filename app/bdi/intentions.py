@@ -30,11 +30,31 @@ class Intention:
     error: str | None = None
 
 
+@dataclass
+class Plan:
+    """Plan concreto seleccionado para satisfacer un deseo."""
+    name: str
+    context: str   # "generate" | "repair"
+    intentions: list[Intention] = field(default_factory=list)
+
+
 class IntentionPipeline:
     """
     Pipeline de 5 capas del agente HAIA.
     Cada ejecución crea una nueva secuencia de intenciones.
     """
+
+    def plan_for(self, context: str) -> list[Intention]:
+        """Despacha el pipeline correcto según el contexto BDI."""
+        if context == "repair":
+            return self._plan_repair()
+        return self._plan_generate()
+
+    def _plan_generate(self) -> list[Intention]:
+        return self.build_scheduling_pipeline()
+
+    def _plan_repair(self) -> list[Intention]:
+        return self.build_repair_pipeline()
 
     def build_scheduling_pipeline(self) -> list[Intention]:
         return [

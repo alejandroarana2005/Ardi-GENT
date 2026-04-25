@@ -214,6 +214,26 @@ class HAIAAgent:
         Aplica Principio de Mínima Perturbación (Capa 5).
         """
         logger.info(f"[HAIA] Evento dinámico: {event.event_type} en {event.schedule_id}")
+
+        # Ensure we have a loaded instance — may be None if agent was created fresh.
+        if self.beliefs.current_instance is None:
+            from app.database.models import ScheduleModel
+            from app.layer1_perception.data_loader import DataLoader
+
+            schedule = (
+                self.db.query(ScheduleModel)
+                .filter(ScheduleModel.schedule_id == event.schedule_id)
+                .first()
+            )
+            if schedule:
+                loader = DataLoader(self.db)
+                instance, _ = loader.load_instance(schedule.semester)
+                self.beliefs.update_from_instance(instance, schedule.semester)
+
+        # Sync assignments into belief state
+        self.beliefs.load_from_schedule(event.schedule_id, self.db)
+        self.beliefs.update_from_event(event)
+
         handler = EventHandler()
         context = {
             "instance": self.beliefs.current_instance,

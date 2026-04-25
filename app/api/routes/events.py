@@ -66,6 +66,7 @@ def post_event(request: DynamicEventRequest, db: Session = Depends(get_db)) -> D
         event_type=record.event_type,
         affected_assignments=record.affected_assignments,
         repair_elapsed_seconds=record.repair_elapsed_seconds,
+        new_schedule_id=repair_result.new_schedule_id,
         created_at=record.created_at,
     )
 

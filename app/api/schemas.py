@@ -224,6 +224,7 @@ class DynamicEventResponse(BaseModel):
     event_type: str
     affected_assignments: int
     repair_elapsed_seconds: float
+    new_schedule_id: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
