@@ -12,7 +12,7 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import health, schedule, events, metrics, assignments
+from app.api.routes import health, schedule, events, metrics, assignments, reports
 from app.config import settings
 
 logging.basicConfig(
@@ -51,6 +51,7 @@ app.include_router(schedule.router, prefix=API_PREFIX)
 app.include_router(events.router, prefix=API_PREFIX)
 app.include_router(metrics.router, prefix=API_PREFIX)
 app.include_router(assignments.router, prefix=API_PREFIX)
+app.include_router(reports.router, prefix=API_PREFIX)
 
 
 @app.on_event("startup")
