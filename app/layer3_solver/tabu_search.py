@@ -1,15 +1,25 @@
 """
-HAIA Agent — Capa 3: Tabu Search mejorado.
+HAIA Agent — Capa 3: Tabu Search para asignación de salones universitarios.
 
-Basado en el algoritmo de La Cruz et al. (2024) "UniSchedApi" pero con extensiones HAIA:
-  1. Memoria de largo plazo (frecuencia de uso de slots) — penaliza movimientos muy usados
-  2. Criterio de aspiración — acepta un movimiento tabú si mejora el mejor global
-  3. Función de evaluación integrada con U(A) de la Capa 4
+BASADO EN:
+    La Cruz, A., Herrera, L., Cortes, J., García-León, A., y Severeyn, E. (2024).
+    "UniSchedApi: A comprehensive solution for university resource scheduling
+    and methodology comparison."
+    Transactions on Energy Systems and Engineering Applications, 5(2):633.
+    DOI: 10.32397/tesea.vol5.n2.633
 
-Extensiones respecto a UniSchedApi:
-  - La Cruz et al. (2024) usa solo lista tabú de tamaño fijo.
-  - HAIA añade matriz de frecuencia freq[classroom][timeslot] para diversificación.
-  - HAIA integra U(A) multi-criterio en lugar del objetivo mono-criterio de UniSchedApi.
+EXTENSIONES HAIA sobre el algoritmo original:
+    1. Memoria de largo plazo: matriz freq[classroom][timeslot] que penaliza
+       movimientos sobre slots frecuentemente usados (diversificación).
+       La Cruz et al. (2024) usa solo lista tabú de tamaño fijo.
+    2. Criterio de aspiración: acepta un movimiento tabú si el vecino supera
+       el mejor score global, independientemente del tenure.
+    3. Evaluación con U(A) multi-criterio (w1·ocup + w2·pref + w3·dist + w4·rec − λ·Pen)
+       en lugar del objetivo mono-criterio del artículo original.
+    4. max_iterations=500 (configurable): HAIA usa un límite bajo deliberadamente
+       porque el Tabu Search produce una solución inicial de calidad media que
+       el SA de la Capa 4 refina en profundidad. No replica los ciclos completos
+       del artículo original, que no incluye post-optimización SA.
 """
 
 from __future__ import annotations
@@ -30,6 +40,9 @@ class TabuSearchSolver:
     """
     Tabu Search con memoria de largo plazo y criterio de aspiración.
     Interface compatible con CSPBacktrackingSolver y MILPSolver.
+
+    Algoritmo base: La Cruz et al. (2024), DOI: 10.32397/tesea.vol5.n2.633.
+    Ver docstring del módulo para la lista completa de extensiones HAIA.
     """
 
     name = "tabu_search"

@@ -103,6 +103,26 @@ class MILPSolver:
                 if prof_slot_vars:
                     model.Add(sum(prof_slot_vars) <= 1)
 
+        # R3: capacidad de aula (informe IEEE sección II.C)
+        # Redundante si domain_filter ya filtró dominios, pero lo afirmamos
+        # explícitamente para documentar las 5 HC y como fail-safe.
+        for (key, cls_code, ts_code), var in variables.items():
+            subject_code = key.split("__")[0]
+            subject = next(s for s in instance.subjects if s.code == subject_code)
+            classroom = next(c for c in classrooms if c.code == cls_code)
+            if classroom.capacity < subject.enrollment:
+                model.Add(var == 0)
+
+        # R4: recursos requeridos disponibles (informe IEEE sección II.C)
+        for (key, cls_code, ts_code), var in variables.items():
+            subject_code = key.split("__")[0]
+            subject = next(s for s in instance.subjects if s.code == subject_code)
+            classroom = next(c for c in classrooms if c.code == cls_code)
+            required = {r.resource_code for r in subject.required_resources}
+            available = {r.code for r in classroom.resources}
+            if not required.issubset(available):
+                model.Add(var == 0)
+
         # Función objetivo: maximizar ocupación + preferencia docente
         w1 = self.config.w1_occupancy
         w2 = self.config.w2_preference

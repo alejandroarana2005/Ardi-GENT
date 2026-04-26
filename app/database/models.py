@@ -1,6 +1,17 @@
 """
 HAIA Agent — Modelos ORM SQLAlchemy.
-Mapea las entidades de dominio (La Cruz et al., 2024) a tablas relacionales.
+
+Mapea a tablas relacionales el modelo de datos definido en:
+    La Cruz, A., Herrera, L., Cortes, J., García-León, A., y Severeyn, E. (2024).
+    "UniSchedApi: A comprehensive solution for university resource scheduling
+    and methodology comparison."
+    Transactions on Energy Systems and Engineering Applications, 5(2):633.
+    DOI: 10.32397/tesea.vol5.n2.633
+
+Entidades tomadas directamente del artículo: Resource, Classroom, TimeSlot,
+Professor, Subject, Assignment. Extensiones HAIA: ScheduleModel (ciclo BDI),
+DynamicEventModel (Capa 5), parent_schedule_id (versionado de reparaciones).
+
 Convención de nombres: snake_case para columnas, PascalCase para clases ORM.
 """
 

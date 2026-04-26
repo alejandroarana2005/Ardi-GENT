@@ -1,7 +1,16 @@
 """
 HAIA Agent — Entidades de dominio puras.
-Modelo de datos exacto de La Cruz et al. (2024) "UniSchedApi", extendido con
-los campos requeridos por la arquitectura BDI de HAIA.
+
+Modelo de datos de:
+    La Cruz, A., Herrera, L., Cortes, J., García-León, A., y Severeyn, E. (2024).
+    "UniSchedApi: A comprehensive solution for university resource scheduling
+    and methodology comparison."
+    Transactions on Energy Systems and Engineering Applications, 5(2):633.
+    DOI: 10.32397/tesea.vol5.n2.633
+
+Extensiones HAIA sobre el modelo original: campos BDI en Subject/Assignment
+(faculty, utilidad_score), entidades SchedulingResult y SchedulingInstance
+con métricas del agente.
 
 Todas las entidades son dataclasses inmutables para facilitar hashing y comparación.
 """

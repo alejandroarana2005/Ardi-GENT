@@ -1,10 +1,4 @@
-"""
-HAIA Agent — Capa 3: Factory de solvers.
-Selecciona automáticamente el solver según tamaño de la instancia:
-  ≤ 150 cursos → CSP Backtracking (más explícito, mejor para instancias pequeñas)
-  >  150 cursos → MILP CP-SAT (OR-Tools, mejor para escala)
-  hint='tabu_search' → Tabu Search (compatible con UniSchedApi, La Cruz et al. 2024)
-"""
+"""HAIA Agent — Capa 3: Factory de solvers."""
 
 import logging
 
@@ -15,6 +9,20 @@ logger = logging.getLogger("[HAIA Layer3-SolverFactory]")
 
 
 class SolverFactory:
+    """
+    Selecciona y configura el solver apropiado según el tamaño de la instancia.
+
+    Criterio de selección (informe IEEE HAIA sección V.B y benchmarks UniSchedApi):
+
+    - total ≤ 50:           CSP Backtracking (exacto, rápido)
+    - 50 < total ≤ 150:     Tabu Search (heurístico eficiente,
+                            basado en La Cruz et al. 2024)
+    - total > 150:          MILP con OR-Tools CP-SAT (escala mejor
+                            en instancias grandes)
+
+    El umbral 150 es configurable vía HAIAConfig.solver_backtrack_threshold.
+    """
+
     def __init__(self, config: HAIAConfig) -> None:
         self.config = config
 

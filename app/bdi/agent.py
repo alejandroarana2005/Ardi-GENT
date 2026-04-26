@@ -275,4 +275,7 @@ class HAIAAgent:
                 )
             )
         self.db.commit()
-        logger.debug(f"[HAIA] {len(assignments)} asignaciones persistidas")
+        logger.info(
+            f"[HAIA Persistencia] Schedule {schedule_id} guardado — "
+            f"{len(assignments)} asignaciones persistidas en BD"
+        )
