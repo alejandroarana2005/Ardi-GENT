@@ -135,7 +135,9 @@ class RepairModule:
         # Restricciones de evento
         blocked_classrooms: set[str] = set()
         blocked_timeslots: set[str] = set()
-        blocked_professor: str | None = None
+        # For PROFESSOR_CANCELLED: map prof_code → timeslots they currently occupy
+        # (force those assignments out of their current slots, but allow new ones).
+        cancelled_prof_blocked_ts: dict[str, set[str]] = {}
 
         etype = event.event_type
         payload = event.payload
@@ -145,7 +147,16 @@ class RepairModule:
         elif etype == "SLOT_BLOCKED":
             blocked_timeslots.add(payload.get("timeslot_code", ""))
         elif etype == "PROFESSOR_CANCELLED":
-            blocked_professor = payload.get("professor_code")
+            # The professor must vacate their CURRENT timeslots — build the block set
+            # from the affected assignments themselves (not from frozen).
+            cancelled_prof = payload.get("professor_code", "")
+            if cancelled_prof:
+                current_ts_for_prof = {
+                    a.timeslot_code
+                    for a in to_reassign
+                    if prof_map.get(a.subject_code) == cancelled_prof
+                }
+                cancelled_prof_blocked_ts[cancelled_prof] = current_ts_for_prof
 
         domains: dict[tuple, list[tuple[str, str]]] = {}
 
@@ -157,13 +168,11 @@ class RepairModule:
                 continue
 
             prof_code = prof_map.get(a.subject_code)
-            # If this professor is cancelled, we cannot reassign their courses
-            # without removing the professor constraint — skip valid domain (empty)
-            if blocked_professor and prof_code == blocked_professor:
-                domains[key] = []
-                continue
-
             prof_entity = prof_entity_map.get(prof_code) if prof_code else None
+            # Timeslots the cancelled professor must vacate
+            extra_blocked_ts = (
+                cancelled_prof_blocked_ts.get(prof_code, set()) if prof_code else set()
+            )
 
             valid: list[tuple[str, str]] = []
             for cls in instance.classrooms:
@@ -176,6 +185,8 @@ class RepairModule:
 
                 for ts in instance.timeslots:
                     if ts.code in blocked_timeslots:
+                        continue
+                    if ts.code in extra_blocked_ts:
                         continue
                     if (cls.code, ts.code) in used_cls_ts:
                         continue
@@ -329,6 +340,11 @@ class RepairModule:
         event,
         context: dict,
     ) -> list | None:
+        """
+        Re-optimización completa. Aplica restricciones del evento al dominio
+        (e.g., bloquea el salón inundado para que no vuelva a ser asignado)
+        y fuerza backtracking para completar en < 30s.
+        """
         instance = context.get("instance")
         config = context.get("config")
         if not instance or not config:
@@ -336,14 +352,31 @@ class RepairModule:
         try:
             from app.layer2_preprocessing.domain_filter import DomainFilter
             from app.layer2_preprocessing.ac3 import AC3Preprocessor
-            from app.layer3_solver.solver_factory import SolverFactory
+            from app.layer3_solver.csp_backtracking import CSPBacktrackingSolver
 
             reduced = DomainFilter().filter(instance)
+            # Apply event constraint: remove blocked resource from domains
+            etype = event.event_type
+            payload = event.payload
+            if etype == "CLASSROOM_UNAVAILABLE":
+                blocked_cls = payload.get("classroom_code", "")
+                reduced = {
+                    var: [(cls, ts) for cls, ts in pairs if cls != blocked_cls]
+                    for var, pairs in reduced.items()
+                }
+            elif etype == "SLOT_BLOCKED":
+                blocked_ts = payload.get("timeslot_code", "")
+                reduced = {
+                    var: [(cls, ts) for cls, ts in pairs if ts != blocked_ts]
+                    for var, pairs in reduced.items()
+                }
+
             domains, feasible = AC3Preprocessor().run(instance, reduced)
             if not feasible:
                 return None
 
-            solver = SolverFactory(config=config).select(instance)
+            # Force backtracking: fast (< 5s) — avoids 60s Tabu Search in fallback
+            solver = CSPBacktrackingSolver(config=config)
             assignments = solver.solve(instance, domains)
             if not assignments:
                 return None
