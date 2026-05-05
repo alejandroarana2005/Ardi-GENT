@@ -88,6 +88,24 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ---
 
+## Correr demo
+
+
+# levantar contenedores
+
+docker-compose up -d
+Start-Sleep -Seconds 15
+
+# plantar semilla
+
+docker exec haia_agent-api-1 python -c "from app.database.session import create_tables; create_tables()"
+docker exec haia_agent-api-1 python -m tests.fixtures.sample_data
+
+# correr demo 
+python scripts/demo_defensa.py --auto
+python scripts/demo_defensa.py 
+python scripts/demo_defensa.py --local
+
 ## Variables de entorno
 
 | Variable | Descripción | Defecto |

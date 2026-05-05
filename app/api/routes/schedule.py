@@ -5,6 +5,7 @@ GET  /schedule/{id} consulta el resultado.
 """
 
 import logging
+import threading
 import uuid
 from datetime import datetime
 
@@ -13,10 +14,38 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import AssignmentResponse, ScheduleDetailResponse, ScheduleRequest, ScheduleResponse
 from app.database.models import ScheduleModel
-from app.database.session import get_db
+from app.database.session import SessionLocal, get_db
 
 logger = logging.getLogger("[HAIA API]")
 router = APIRouter(prefix="/schedule", tags=["Schedule"])
+
+
+def _run_scheduling_bg(schedule_id: str, semester: str, solver_hint: str | None) -> None:
+    """Ejecuta el pipeline BDI en un thread separado con su propia sesión de BD."""
+    from app.bdi.agent import HAIAAgent
+    from app.config import settings
+
+    with SessionLocal() as db:
+        record = db.query(ScheduleModel).filter(ScheduleModel.schedule_id == schedule_id).first()
+        if not record:
+            return
+        try:
+            agent = HAIAAgent(db_session=db, config=settings)
+            result = agent.run_scheduling_cycle(
+                semester=semester,
+                schedule_id=schedule_id,
+                solver_hint=solver_hint,
+            )
+            record.solver_used = result.solver_used
+            record.utility_score = result.utility_score
+            record.elapsed_seconds = result.elapsed_seconds
+            record.is_feasible = result.is_feasible
+            record.status = "completed" if result.is_feasible else "failed"
+        except Exception as exc:
+            logger.exception(f"[API] Error en background task {schedule_id}: {exc}")
+            record.status = "failed"
+        finally:
+            db.commit()
 
 
 @router.post(
@@ -27,17 +56,13 @@ router = APIRouter(prefix="/schedule", tags=["Schedule"])
 )
 def create_schedule(request: ScheduleRequest, db: Session = Depends(get_db)) -> ScheduleResponse:
     """
-    Inicia el pipeline BDI completo:
+    Inicia el pipeline BDI en background:
     Percepción → AC-3 → Solver → SA → Persistencia.
-    Retorna 202 Accepted con el schedule_id para consultar el resultado.
+    Retorna 202 Accepted de inmediato. Consultar progreso con GET /schedule/{id}.
     """
-    from app.bdi.agent import HAIAAgent
-    from app.config import settings
-
     schedule_id = str(uuid.uuid4())
     logger.info(f"[API] Nuevo ciclo de asignación — semestre={request.semester}, id={schedule_id}")
 
-    # Crear registro pending antes de iniciar
     record = ScheduleModel(
         schedule_id=schedule_id,
         semester=request.semester,
@@ -51,30 +76,11 @@ def create_schedule(request: ScheduleRequest, db: Session = Depends(get_db)) -> 
     db.commit()
     db.refresh(record)
 
-    try:
-        agent = HAIAAgent(db_session=db, config=settings)
-        result = agent.run_scheduling_cycle(
-            semester=request.semester,
-            schedule_id=schedule_id,
-            solver_hint=request.solver_hint,
-        )
-
-        record.solver_used = result.solver_used
-        record.utility_score = result.utility_score
-        record.elapsed_seconds = result.elapsed_seconds
-        record.is_feasible = result.is_feasible
-        record.status = "completed" if result.is_feasible else "failed"
-        db.commit()
-        db.refresh(record)
-
-    except Exception as exc:
-        logger.exception(f"[API] Error en ciclo de asignación: {exc}")
-        record.status = "failed"
-        db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
-        )
+    threading.Thread(
+        target=_run_scheduling_bg,
+        args=(schedule_id, request.semester, request.solver_hint),
+        daemon=True,
+    ).start()
 
     return ScheduleResponse(
         schedule_id=record.schedule_id,
@@ -84,7 +90,7 @@ def create_schedule(request: ScheduleRequest, db: Session = Depends(get_db)) -> 
         elapsed_seconds=record.elapsed_seconds,
         is_feasible=record.is_feasible,
         status=record.status,
-        assignment_count=len(record.assignments),
+        assignment_count=0,
         created_at=record.created_at,
     )
 

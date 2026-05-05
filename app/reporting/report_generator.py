@@ -357,49 +357,199 @@ class ReportGenerator:
     def _generate_pdf_reportlab(
         self, schedule_id: str, db, output_path: str
     ) -> str:
-        """Genera PDF con reportlab (solo disponible si está instalado)."""
+        """Genera PDF completo con reportlab: portada, métricas y tabla de asignaciones."""
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet
-        from reportlab.platypus import (
-            Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
-        )
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
         from reportlab.lib import colors
+        from reportlab.platypus import (
+            HRFlowable, PageBreak, Paragraph, SimpleDocTemplate,
+            Spacer, Table, TableStyle,
+        )
 
         report = self.generate_full_report(schedule_id, db)
         meta = report["metadata"]
         ub = report.get("utility_breakdown", {})
         assignments = report.get("assignments", [])
 
-        doc = SimpleDocTemplate(output_path, pagesize=A4)
+        # Obtener professor_code directamente del ORM (no incluido en el dict de report)
+        from app.database.models import AssignmentModel, ScheduleModel
+        schedule_orm = (
+            db.query(ScheduleModel)
+            .filter(ScheduleModel.schedule_id == schedule_id)
+            .first()
+        )
+        professor_map: dict = {}
+        if schedule_orm:
+            for a in db.query(AssignmentModel).filter(
+                AssignmentModel.schedule_id == schedule_orm.id
+            ).all():
+                professor_map[
+                    (a.subject_code, a.timeslot_code, a.group_number, a.session_number)
+                ] = a.professor_code
+
+        generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        DARK_BLUE = colors.HexColor("#004080")
+        LIGHT_BLUE = colors.HexColor("#e8f0fe")
+        ALT_ROW = colors.HexColor("#f4f8ff")
+
+        def _footer(canvas, doc):
+            canvas.saveState()
+            canvas.setFont("Helvetica", 7)
+            canvas.setFillColor(colors.grey)
+            canvas.drawCentredString(
+                A4[0] / 2,
+                1.2 * cm,
+                f"Generado: {generated_at}  |  Schedule ID: {schedule_id}  |  Página {doc.page}",
+            )
+            canvas.restoreState()
+
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=A4,
+            leftMargin=2 * cm,
+            rightMargin=2 * cm,
+            topMargin=2.5 * cm,
+            bottomMargin=2.5 * cm,
+        )
         styles = getSampleStyleSheet()
+
+        cover_title = ParagraphStyle(
+            "CoverTitle", parent=styles["Title"],
+            fontSize=26, spaceAfter=10,
+            textColor=DARK_BLUE, alignment=1,
+        )
+        cover_sub = ParagraphStyle(
+            "CoverSub", parent=styles["Normal"],
+            fontSize=13, spaceAfter=6,
+            textColor=DARK_BLUE, alignment=1,
+        )
+        section_head = ParagraphStyle(
+            "SectionHead", parent=styles["Heading1"],
+            fontSize=13, textColor=DARK_BLUE,
+            spaceAfter=4, spaceBefore=8,
+        )
+        cover_foot = ParagraphStyle(
+            "CoverFoot", parent=styles["Normal"],
+            fontSize=10, alignment=1, textColor=colors.grey,
+        )
+
         elements = []
 
+        # ── PORTADA ───────────────────────────────────────────────────────────
+        elements.append(Spacer(1, 4 * cm))
+        elements.append(Paragraph("HAIA Schedule Report", cover_title))
+        elements.append(HRFlowable(width="100%", thickness=2, color=DARK_BLUE))
+        elements.append(Spacer(1, 0.4 * cm))
+        elements.append(Paragraph("Hybrid Adaptive Intelligent Agent", cover_sub))
         elements.append(Paragraph(
-            "HAIA — Reporte de Asignación de Horarios", styles["Title"]
+            "Sistema de Asignación de Horarios Académicos — Universidad de Ibagué",
+            cover_sub,
         ))
-        elements.append(Paragraph(
-            f"Semestre: {meta['semester']} | U(A): {ub.get('total', 0):.4f} | "
-            f"HC: {ub.get('hard_constraint_violations', 0)}",
-            styles["Normal"],
-        ))
-        elements.append(Spacer(1, 20))
+        elements.append(Spacer(1, 1.5 * cm))
 
-        # Tabla de asignaciones
-        data = [["Materia", "Franja", "Salón", "Grupo", "U_i"]]
-        for a in sorted(assignments, key=lambda x: x["timeslot_code"])[:50]:
-            data.append([
-                a["subject_code"], a["timeslot_code"],
-                a["classroom_code"], str(a["group_number"]),
+        cover_data = [
+            ["Semestre", meta["semester"]],
+            ["Estado", meta["status"]],
+            ["Solver", meta["solver_used"]],
+            ["Total asignaciones", str(meta["total_assignments"])],
+            ["U(A)", f"{ub.get('total', 0):.4f}"],
+            ["HC violadas", str(ub.get("hard_constraint_violations", 0))],
+            ["Tiempo solver", f"{meta['elapsed_seconds']:.2f} s"],
+            ["Generado", generated_at],
+            ["Schedule ID", schedule_id],
+        ]
+        ct = Table(cover_data, colWidths=[5 * cm, 10.6 * cm])
+        ct.setStyle(TableStyle([
+            ("FONTNAME",  (0, 0), (0, -1), "Helvetica-Bold"),
+            ("FONTNAME",  (1, 0), (1, -1), "Helvetica"),
+            ("FONTSIZE",  (0, 0), (-1, -1), 11),
+            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, ALT_ROW]),
+            ("GRID",      (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+            ("TOPPADDING",    (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+        ]))
+        elements.append(ct)
+        elements.append(Spacer(1, 1.2 * cm))
+        elements.append(Paragraph(
+            "Ingeniería de Sistemas — Facultad de Ingeniería", cover_foot
+        ))
+        elements.append(PageBreak())
+
+        # ── MÉTRICAS U(A) ─────────────────────────────────────────────────────
+        elements.append(Paragraph("Desglose de U(A)", section_head))
+        elements.append(HRFlowable(width="100%", thickness=1, color=DARK_BLUE))
+        elements.append(Spacer(1, 0.3 * cm))
+
+        metrics_rows = [
+            ["Componente", "Valor", "Descripción"],
+            ["U_ocupación",    f"{ub.get('u_occupancy', 0):.4f}",    "Aprovechamiento de salones"],
+            ["U_preferencia",  f"{ub.get('u_preference', 0):.4f}",   "Preferencias horarias de profesores"],
+            ["U_distribución", f"{ub.get('u_distribution', 0):.4f}", "Distribución equilibrada en la semana"],
+            ["U_recursos",     f"{ub.get('u_resources', 0):.4f}",    "Uso eficiente de recursos físicos"],
+            ["Penalidad (λ)",  f"{ub.get('penalty', 0):.4f}",        "Penalización por violaciones SC"],
+            ["HC violadas",    str(ub.get("hard_constraint_violations", 0)), "Restricciones duras incumplidas"],
+            ["SC violadas",    str(ub.get("soft_constraint_violations", 0)), "Restricciones blandas incumplidas"],
+            ["U(A) Total",     f"{ub.get('total', 0):.4f}",          "Función objetivo final"],
+        ]
+        mt = Table(metrics_rows, colWidths=[4.5 * cm, 2.8 * cm, 9.3 * cm])
+        mt.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0),  DARK_BLUE),
+            ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
+            ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+            ("FONTNAME",      (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("BACKGROUND",    (0, -1), (-1, -1), LIGHT_BLUE),
+            ("ROWBACKGROUNDS",(0, 1),  (-1, -2), [colors.white, ALT_ROW]),
+            ("GRID",          (0, 0), (-1, -1),  0.5, colors.grey),
+            ("FONTSIZE",      (0, 0), (-1, -1),  10),
+            ("TOPPADDING",    (0, 0), (-1, -1),  5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1),  5),
+            ("LEFTPADDING",   (0, 0), (-1, -1),  8),
+        ]))
+        elements.append(mt)
+        elements.append(Spacer(1, 0.8 * cm))
+
+        # ── TABLA DE ASIGNACIONES ─────────────────────────────────────────────
+        elements.append(Paragraph(
+            f"Asignaciones ({meta['total_assignments']})", section_head
+        ))
+        elements.append(HRFlowable(width="100%", thickness=1, color=DARK_BLUE))
+        elements.append(Spacer(1, 0.3 * cm))
+
+        asgn_rows = [["Materia", "Franja", "Aula", "Profesor", "Grupo", "Ses.", "U_i"]]
+        for a in sorted(assignments, key=lambda x: x["timeslot_code"]):
+            key = (a["subject_code"], a["timeslot_code"], a["group_number"], a["session_number"])
+            prof = professor_map.get(key, "—")
+            asgn_rows.append([
+                a["subject_code"],
+                a["timeslot_code"],
+                a["classroom_code"],
+                prof,
+                str(a["group_number"]),
+                str(a["session_number"]),
                 f"{a['utilidad_score']:.4f}",
             ])
-        t = Table(data)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.darkblue),
-            ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
-            ("GRID",       (0, 0), (-1, -1), 0.5, colors.grey),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.lightblue]),
+
+        at = Table(
+            asgn_rows,
+            colWidths=[3.5 * cm, 3 * cm, 2.5 * cm, 3 * cm, 1.5 * cm, 1.2 * cm, 2 * cm],
+            repeatRows=1,
+        )
+        at.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0),  DARK_BLUE),
+            ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
+            ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, ALT_ROW]),
+            ("GRID",          (0, 0), (-1, -1),  0.5, colors.grey),
+            ("FONTSIZE",      (0, 0), (-1, -1),  9),
+            ("TOPPADDING",    (0, 0), (-1, -1),  4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1),  4),
+            ("LEFTPADDING",   (0, 0), (-1, -1),  6),
         ]))
-        elements.append(t)
-        doc.build(elements)
-        logger.info(f"[ReportGenerator] PDF generado: {output_path}")
+        elements.append(at)
+
+        doc.build(elements, onFirstPage=_footer, onLaterPages=_footer)
+        logger.info(f"[ReportGenerator] PDF reportlab generado: {output_path}")
         return output_path

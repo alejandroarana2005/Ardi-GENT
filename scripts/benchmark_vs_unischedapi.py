@@ -61,6 +61,11 @@ def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 
+# El background thread en schedule.py usa SessionLocal() directamente (no pasa
+# por get_db), por lo que también hay que redirigirlo al engine in-memory.
+import app.api.routes.schedule as _sched_route
+_sched_route.SessionLocal = TestSession
+
 
 def populate_db(instance) -> None:
     with TestSession() as session:
@@ -132,12 +137,29 @@ def run_haia(client, solver: str = "backtracking") -> dict:
     t0 = time.perf_counter()
     resp = client.post("/api/v1/schedule",
                        json={"semester": "2024-A", "solver_hint": solver})
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     if resp.status_code != 202:
         return {"error": resp.text, "solver": solver}
 
     sid = resp.json()["schedule_id"]
+
+    # Polling hasta que el schedule esté completed
+    max_wait = 180  # 3 minutos máximo
+    poll_interval = 3  # segundos entre polls
+    elapsed = 0
+
+    while elapsed < max_wait:
+        status_resp = client.get(f"/api/v1/schedule/{sid}")
+        if status_resp.status_code != 200:
+            break
+        status_data = status_resp.json()
+        if status_data.get("status") in ("completed", "failed"):
+            break
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)  # incluye polling
+
     m = client.get(f"/api/v1/metrics/{sid}").json()
     assignments = client.get(f"/api/v1/schedule/{sid}/assignments").json()
 
@@ -196,47 +218,151 @@ def run_haia_with_events(client, schedule_id: str) -> dict:
     return {"events_applied": results, "final_schedule_id": current_sid}
 
 
-# ── UniSchedApi-TS simulation ─────────────────────────────────────────────────
+# ── UniSchedApi-TS Replica — Algorithm 1 (La Cruz et al., 2024) ──────────────
+
+class UniSchedApiTSReplica:
+    """
+    Implementación fiel del Algorithm 1 de La Cruz et al. (2024).
+
+    Diferencias deliberadas respecto a TabuSearchSolver de HAIA:
+    • Sin memoria de largo plazo (freq matrix)
+    • Sin criterio de aspiración
+    • Evaluación por conteo de violaciones blandas, no U(A)
+    • Tabu list FIFO sin tenure fijo (crece sin límite)
+    • max_iterations configurable; paper reporta 100,000
+    """
+
+    def __init__(self, max_iterations: int = 10_000) -> None:
+        self.max_iterations = max_iterations
+
+    def solve(
+        self,
+        instance,
+        domains: dict,
+    ) -> tuple[list, int]:
+        """Returns (best_assignments, convergence_iteration)."""
+        import random as _rng
+        from app.domain.entities import Assignment
+        from app.domain.constraints import get_active_constraints
+
+        var_keys = [k for k, v in domains.items() if v]
+        if not var_keys:
+            return [], 0
+
+        # var_key -> (subject_code, group_number, session_number)
+        var_meta: dict = {}
+        for s in instance.subjects:
+            for g in range(1, s.groups + 1):
+                for sess in range(1, s.weekly_subgroups + 1):
+                    var_meta[f"{s.code}__g{g}__s{sess}"] = (s.code, g, sess)
+
+        # (var_key, classroom_code) -> [timeslot_codes]
+        dom_cls: dict = {}
+        for var, pairs in domains.items():
+            for cls, ts in pairs:
+                dom_cls.setdefault((var, cls), []).append(ts)
+
+        classrooms = [c.code for c in instance.classrooms]
+        hc = get_active_constraints("hard")
+        sc = get_active_constraints("soft")
+
+        def make_rand_sol() -> list:
+            sol = []
+            for var in var_keys:
+                cls, ts = _rng.choice(domains[var])
+                code, g, sess = var_meta[var]
+                sol.append(Assignment(code, cls, ts, g, sess))
+            return sol
+
+        def soft_violations(sol: list) -> int:
+            return sum(
+                1 for c in sc for a in sol
+                if not c.check(a, sol, instance)
+            )
+
+        def hc_valid(cand, others: list) -> bool:
+            all_a = others + [cand]
+            return all(c.check(cand, all_a, instance) for c in hc)
+
+        # Initialize (Algorithm 1 — La Cruz et al., 2024)
+        best      = make_rand_sol()
+        best_sc   = soft_violations(best)
+        tabu: list = []                          # FIFO, sin tenure fijo
+        cur       = list(best)
+        cur_idx   = {f"{a.subject_code}__g{a.group_number}__s{a.session_number}": i
+                     for i, a in enumerate(cur)}
+        conv      = 0
+
+        for it in range(self.max_iterations):
+            room = _rng.choice(classrooms)       # Select room randomly
+            var  = _rng.choice(var_keys)
+            valid_ts = dom_cls.get((var, room), [])
+            if not valid_ts:
+                continue
+
+            ts   = _rng.choice(valid_ts)         # Select random time slot from valid group
+            move = (var, room, ts)
+
+            code, g, sess = var_meta[var]
+            cand   = Assignment(code, room, ts, g, sess)
+            idx    = cur_idx.get(var)
+            others = [a for i, a in enumerate(cur) if i != idx]
+
+            if not hc_valid(cand, others):       # Validate combination
+                continue
+
+            if move in tabu:                     # If solution NOT in tabuList → skip
+                continue
+
+            new_sol = list(cur)
+            if idx is not None:
+                new_sol[idx] = cand
+
+            new_sc = soft_violations(new_sol)
+            tabu.append(move)                    # Add to tabuList
+
+            if new_sc < best_sc:                 # Compare with bestSolution
+                best, best_sc = list(new_sol), new_sc
+                cur    = best
+                cur_idx = {f"{a.subject_code}__g{a.group_number}__s{a.session_number}": i
+                           for i, a in enumerate(cur)}
+                conv = it
+
+        return best, conv
+
 
 def run_unischedapi_simulation(instance) -> dict:
     """
-    Simula UniSchedApi-TS (La Cruz et al., 2024).
-    Usa TabuSearchSolver con parámetros del paper:
-        max_iterations = 100 (reducido para benchmark rápido — el paper usa 100,000
-        pero en nuestra instancia de 105 asignaciones 100 iter ≈ 60s del paper en escala)
-        tabu_tenure = 7
-    No aplica SA post-optimización. No tiene manejo de eventos dinámicos.
+    Ejecuta UniSchedApiTSReplica — implementación desde cero del Algorithm 1
+    de La Cruz et al. (2024).  NO usa TabuSearchSolver de HAIA.
+
+    Parámetros del benchmark:
+        max_iterations = 10,000  (paper: 100,000; su Figure 5 reporta que el
+        86 % converge antes de 60,000; 10 k es un punto medio defendible para
+        tiempo de benchmark manejable).
     """
     from app.config import settings
     from app.layer2_preprocessing.domain_filter import DomainFilter
     from app.layer2_preprocessing.ac3 import AC3Preprocessor
-    from app.layer3_solver.tabu_search import TabuSearchSolver
     from app.layer4_optimization.utility_function import UtilityCalculator
     from app.domain.constraints import get_active_constraints
 
     t0 = time.perf_counter()
 
-    # Fase 2: dominios reducidos
     reduced = DomainFilter().filter(instance)
     domains, feasible = AC3Preprocessor().run(instance, reduced)
     if not feasible:
         return {"error": "infeasible after AC3", "elapsed_ms": 0}
 
-    # Tabu Search (parámetros La Cruz et al., 2024)
-    solver = TabuSearchSolver(
-        config=settings,
-        tabu_tenure=7,
-        max_iterations=200,
-        max_no_improve=50,
-    )
-    assignments = solver.solve(instance, domains)
+    solver = UniSchedApiTSReplica(max_iterations=10_000)
+    assignments, conv_iter = solver.solve(instance, domains)
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     if not assignments:
         return {"error": "no solution found", "elapsed_ms": elapsed_ms}
 
     calc = UtilityCalculator(settings.utility_weights)
-    u = calc.compute(assignments, instance)
+    u    = calc.compute(assignments, instance)
 
     hard_constraints = get_active_constraints("hard")
     hc_violations = sum(
@@ -245,11 +371,13 @@ def run_unischedapi_simulation(instance) -> dict:
     )
 
     return {
-        "solver": "UniSchedApi-TS (La Cruz et al., 2024)",
+        "solver": "UniSchedApi-TS (Algorithm 1 — La Cruz et al., 2024)",
         "utility_score": round(u, 4),
         "hard_violations": hc_violations,
         "total_assignments": len(assignments),
         "elapsed_ms": elapsed_ms,
+        "convergence_iter": conv_iter,
+        "max_iterations": 10_000,
         "events_capable": False,
     }
 
@@ -293,38 +421,43 @@ def run() -> None:
     unisched = run_unischedapi_simulation(instance)
 
     # ── Tabla comparativa ─────────────────────────────────────────────────────
-    print("\n" + "="*70)
+    print("\n" + "="*75)
     print("  TABLA COMPARATIVA FINAL")
-    print("="*70)
-    print(f"  {'Sistema':<28} {'U(A)':>8} {'HC':>5} {'Asig':>6} {'ms':>8} {'Eventos':>10}")
-    print("  " + "-"*66)
+    print("="*75)
+    print(f"  {'Sistema':<32} {'U(A)':>8} {'HC':>5} {'Asig':>6} {'ms':>8} {'Eventos':>8} {'Conv@it':>8}")
+    print("  " + "-"*71)
 
-    def row(label, data, extra=""):
+    def row(label, data):
         if "error" in data:
-            print(f"  {label:<28}  ERROR: {data['error']}")
+            print(f"  {label:<32}  ERROR: {data['error']}")
             return
+        conv = f"{data['convergence_iter']:>8,}" if "convergence_iter" in data else f"{'—':>8}"
         print(
-            f"  {label:<28} "
+            f"  {label:<32} "
             f"{data.get('utility_score', 0):>8.4f} "
             f"{data.get('hard_violations', 0):>5} "
             f"{data.get('total_assignments', 0):>6} "
             f"{data.get('elapsed_ms', 0):>8,} "
-            f"{'Sí' if data.get('events_capable') else 'No':>10}"
-            f"{extra}"
+            f"{'Sí' if data.get('events_capable') else 'No':>8}"
+            f"{conv}"
         )
 
     row("HAIA (CSP+SA)", haia_bt)
     row("HAIA (TS+SA)", haia_ts)
-    row("UniSchedApi-TS", unisched)
+    row("UniSchedApi-TS (Alg.1 replica)", unisched)
 
-    print("  " + "-"*66)
+    print("  " + "-"*71)
     print(f"\n  Ventaja U(A) HAIA-CSP vs UniSchedApi: "
           f"{haia_bt.get('utility_score',0) - unisched.get('utility_score',0):+.4f}")
+    if "convergence_iter" in unisched:
+        print(f"  UniSchedApi-TS: convergencia en iter {unisched['convergence_iter']:,}"
+              f" / {unisched['max_iterations']:,}"
+              f" ({unisched['convergence_iter']/unisched['max_iterations']*100:.1f}%)")
 
     # ── Eventos dinámicos ─────────────────────────────────────────────────────
-    print("\n" + "="*70)
+    print("\n" + "="*75)
     print("  CAPACIDAD DE EVENTOS DINAMICOS")
-    print("="*70)
+    print("="*75)
     print(f"  UniSchedApi-TS: SIN soporte (re-run completo requerido)")
     if "events_applied" in haia_events:
         for ev in haia_events["events_applied"]:
@@ -335,9 +468,9 @@ def run() -> None:
     else:
         print("  HAIA: eventos no aplicados (sin asignaciones)")
 
-    print("\n" + "="*70)
+    print("\n" + "="*75)
     print("  CONCLUSION")
-    print("="*70)
+    print("="*75)
     haia_u = haia_bt.get("utility_score", 0)
     uni_u = unisched.get("utility_score", 0)
     haia_hc = haia_bt.get("hard_violations", 0)
