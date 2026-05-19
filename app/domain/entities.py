@@ -222,3 +222,4 @@ class SchedulingResult:
     is_feasible: bool
     violations: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    layer_times: dict = field(default_factory=dict)

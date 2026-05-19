@@ -7,7 +7,7 @@ los límites de capa (La Cruz et al., 2024 — patrón API REST).
 from __future__ import annotations
 
 from datetime import datetime, time
-from typing import Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -187,9 +187,36 @@ class ScheduleDetailResponse(BaseModel):
     solve_time_ms: int
     elapsed_seconds: float
     assignments: Optional[list[AssignmentResponse]] = None
+    layer_times: Optional[Dict[str, Optional[int]]] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ─────────────────────── Lista de horarios ───────────────────────────────────
+
+class ScheduleListItem(BaseModel):
+    """Metadata de un horario para listados — sin assignments."""
+    schedule_id: str
+    semester: str
+    status: str
+    solver_used: Optional[str] = None
+    utility_score: Optional[float] = None
+    is_feasible: Optional[bool] = None
+    total_courses: Optional[int] = None
+    assigned_courses: Optional[int] = None
+    hard_constraint_violations: Optional[int] = None
+    elapsed_seconds: Optional[float] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ScheduleListResponse(BaseModel):
+    items: List[ScheduleListItem]
+    total: int
+    limit: int
+    offset: int
 
 
 # ─────────────────────── Eventos dinámicos ───────────────────────────────────

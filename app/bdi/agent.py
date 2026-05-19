@@ -57,17 +57,20 @@ class HAIAAgent:
         schedule_id = schedule_id or str(uuid.uuid4())
         t0 = time.perf_counter()
         pipeline = self.intentions.build_scheduling_pipeline()
+        layer_times: dict = {}
 
         logger.info(f"[HAIA] Iniciando ciclo de asignación — semestre={semester}, id={schedule_id}")
 
         # ── Intención 1: Percepción ──────────────────────────────────────────
         step = pipeline[0]
         step.status = IntentionStatus.RUNNING
+        _lt = time.perf_counter()
         try:
             loader = DataLoader(self.db)
             instance, validation = loader.load_instance(semester)
 
             if not validation.is_valid:
+                layer_times["layer1_ms"] = int((time.perf_counter() - _lt) * 1000)
                 step.status = IntentionStatus.FAILED
                 step.error = str(validation.errors)
                 logger.error(f"[HAIA] Percepción fallida: {validation.errors}")
@@ -80,6 +83,7 @@ class HAIAAgent:
                     elapsed_seconds=time.perf_counter() - t0,
                     is_feasible=False,
                     violations=validation.errors,
+                    layer_times=layer_times,
                 )
 
             self.beliefs.update_from_instance(instance, semester)
@@ -90,10 +94,12 @@ class HAIAAgent:
             step.status = IntentionStatus.FAILED
             step.error = str(exc)
             raise
+        layer_times["layer1_ms"] = int((time.perf_counter() - _lt) * 1000)
 
         # ── Intención 2: Preprocesamiento AC-3 ──────────────────────────────
         step = pipeline[1]
         step.status = IntentionStatus.RUNNING
+        _lt = time.perf_counter()
         try:
             from app.layer2_preprocessing.domain_filter import DomainFilter
             from app.layer2_preprocessing.ac3 import AC3Preprocessor
@@ -105,6 +111,7 @@ class HAIAAgent:
             csp_domains, feasible = ac3.run(instance, reduced_domains)
 
             if not feasible:
+                layer_times["layer2_ms"] = int((time.perf_counter() - _lt) * 1000)
                 step.status = IntentionStatus.FAILED
                 step.error = "AC-3 detected empty domain — problem is infeasible"
                 logger.error(f"[HAIA] {step.error}")
@@ -117,6 +124,7 @@ class HAIAAgent:
                     elapsed_seconds=time.perf_counter() - t0,
                     is_feasible=False,
                     violations=[step.error],
+                    layer_times=layer_times,
                 )
 
             step.status = IntentionStatus.COMPLETED
@@ -125,10 +133,12 @@ class HAIAAgent:
             step.status = IntentionStatus.FAILED
             step.error = str(exc)
             raise
+        layer_times["layer2_ms"] = int((time.perf_counter() - _lt) * 1000)
 
         # ── Intención 3: Solver (CSP Backtracking o MILP) ───────────────────
         step = pipeline[2]
         step.status = IntentionStatus.RUNNING
+        _lt = time.perf_counter()
         try:
             from app.layer3_solver.solver_factory import SolverFactory
 
@@ -140,6 +150,7 @@ class HAIAAgent:
             solver_used = solver.name
 
             if not assignments:
+                layer_times["layer3_ms"] = int((time.perf_counter() - _lt) * 1000)
                 step.status = IntentionStatus.FAILED
                 step.error = "Solver returned no assignments"
                 return SchedulingResult(
@@ -151,6 +162,7 @@ class HAIAAgent:
                     elapsed_seconds=time.perf_counter() - t0,
                     is_feasible=False,
                     violations=["Solver found no feasible assignment"],
+                    layer_times=layer_times,
                 )
 
             step.status = IntentionStatus.COMPLETED
@@ -159,10 +171,12 @@ class HAIAAgent:
             step.status = IntentionStatus.FAILED
             step.error = str(exc)
             raise
+        layer_times["layer3_ms"] = int((time.perf_counter() - _lt) * 1000)
 
         # ── Intención 4: Post-optimización SA ───────────────────────────────
         step = pipeline[3]
         step.status = IntentionStatus.RUNNING
+        _lt = time.perf_counter()
         try:
             from app.layer4_optimization.simulated_annealing import SimulatedAnnealing
             from app.layer4_optimization.utility_function import UtilityCalculator
@@ -179,8 +193,12 @@ class HAIAAgent:
             step.status = IntentionStatus.FAILED
             step.error = str(exc)
             raise
+        layer_times["layer4_ms"] = int((time.perf_counter() - _lt) * 1000)
 
         # ── Intención 5: Persistir ───────────────────────────────────────────
+        # layer5_ms mide reparación dinámica (Capa 5); no aplica en generación inicial
+        layer_times["layer5_ms"] = None
+
         step = pipeline[4]
         step.status = IntentionStatus.RUNNING
         try:
@@ -195,7 +213,9 @@ class HAIAAgent:
         logger.info(
             f"[HAIA] Ciclo completado — U(A)={utility_score:.4f}, "
             f"asignaciones={len(optimized)}, solver={solver_used}, "
-            f"tiempo={elapsed:.2f}s"
+            f"tiempo={elapsed:.2f}s | capas(ms): "
+            f"L1={layer_times['layer1_ms']} L2={layer_times['layer2_ms']} "
+            f"L3={layer_times['layer3_ms']} L4={layer_times['layer4_ms']}"
         )
 
         return SchedulingResult(
@@ -206,6 +226,7 @@ class HAIAAgent:
             solver_used=solver_used,
             elapsed_seconds=elapsed,
             is_feasible=True,
+            layer_times=layer_times,
         )
 
     def handle_dynamic_event(self, event: DynamicEvent) -> RepairResult:

@@ -224,6 +224,12 @@ class ScheduleModel(Base):
 
     parent_schedule_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
+    layer1_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    layer2_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    layer3_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    layer4_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    layer5_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     assignments: Mapped[list[AssignmentModel]] = relationship(
         "AssignmentModel", back_populates="schedule", cascade="all, delete-orphan"
     )

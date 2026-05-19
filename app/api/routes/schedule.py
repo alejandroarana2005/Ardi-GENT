@@ -9,10 +9,15 @@ import threading
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.schemas import AssignmentResponse, ScheduleDetailResponse, ScheduleRequest, ScheduleResponse
+from app.api.schemas import (
+    AssignmentResponse, ScheduleDetailResponse, ScheduleListItem,
+    ScheduleListResponse, ScheduleRequest, ScheduleResponse,
+)
 from app.database.models import ScheduleModel
 from app.database.session import SessionLocal, get_db
 
@@ -41,6 +46,11 @@ def _run_scheduling_bg(schedule_id: str, semester: str, solver_hint: str | None)
             record.elapsed_seconds = result.elapsed_seconds
             record.is_feasible = result.is_feasible
             record.status = "completed" if result.is_feasible else "failed"
+            record.layer1_ms = result.layer_times.get("layer1_ms")
+            record.layer2_ms = result.layer_times.get("layer2_ms")
+            record.layer3_ms = result.layer_times.get("layer3_ms")
+            record.layer4_ms = result.layer_times.get("layer4_ms")
+            record.layer5_ms = result.layer_times.get("layer5_ms")
         except Exception as exc:
             logger.exception(f"[API] Error en background task {schedule_id}: {exc}")
             record.status = "failed"
@@ -118,6 +128,14 @@ def get_schedule(schedule_id: str, db: Session = Depends(get_db)) -> ScheduleDet
         for a in record.assignments
     ]
 
+    layer_times = {
+        "layer1_ms": record.layer1_ms,
+        "layer2_ms": record.layer2_ms,
+        "layer3_ms": record.layer3_ms,
+        "layer4_ms": record.layer4_ms,
+        "layer5_ms": record.layer5_ms,
+    }
+
     return ScheduleDetailResponse(
         schedule_id=record.schedule_id,
         semester=record.semester,
@@ -132,6 +150,7 @@ def get_schedule(schedule_id: str, db: Session = Depends(get_db)) -> ScheduleDet
         solve_time_ms=int(record.elapsed_seconds * 1000),
         elapsed_seconds=record.elapsed_seconds,
         assignments=assignments_resp,
+        layer_times=layer_times,
         created_at=record.created_at,
     )
 
@@ -194,3 +213,60 @@ def delete_schedule(schedule_id: str, db: Session = Depends(get_db)) -> dict:
     db.delete(record)
     db.commit()
     return {"schedule_id": schedule_id, "status": "deleted"}
+
+
+# ── Endpoint de listado — router separado para que la URL sea /schedules ──────
+
+schedules_router = APIRouter(prefix="/schedules", tags=["Schedules"])
+
+
+@schedules_router.get("", response_model=ScheduleListResponse, summary="Listar horarios")
+def list_schedules(
+    db: Session = Depends(get_db),
+    semester: Optional[str] = Query(None, description="Filtrar por semestre (ej: 2024-A)"),
+    status: Optional[str] = Query(None, description="Filtrar por estado: completed | running | failed"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+) -> ScheduleListResponse:
+    """
+    Devuelve los horarios ordenados de más reciente a más antiguo.
+    No incluye el array de assignments — usar GET /schedule/{id} para eso.
+    """
+    query = db.query(ScheduleModel)
+
+    if semester:
+        query = query.filter(ScheduleModel.semester == semester)
+    if status:
+        query = query.filter(ScheduleModel.status == status)
+
+    total = query.count()
+
+    records = (
+        query
+        .order_by(ScheduleModel.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    return ScheduleListResponse(
+        items=[
+            ScheduleListItem(
+                schedule_id=r.schedule_id,
+                semester=r.semester,
+                status=r.status,
+                solver_used=r.solver_used,
+                utility_score=r.utility_score,
+                is_feasible=r.is_feasible,
+                total_courses=len(r.assignments),
+                assigned_courses=len(r.assignments),
+                hard_constraint_violations=0 if r.is_feasible else -1,
+                elapsed_seconds=r.elapsed_seconds,
+                created_at=r.created_at,
+            )
+            for r in records
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )

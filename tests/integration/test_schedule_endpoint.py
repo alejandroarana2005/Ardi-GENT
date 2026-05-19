@@ -371,3 +371,175 @@ class TestPhase2SuccessCriteria:
         if data["status"] == "completed":
             assert data["hard_constraint_violations"] == 0
             assert data["assigned_courses"] > 0
+
+
+# ── Tests de tiempos por capa ─────────────────────────────────────────────────
+
+class TestLayerTimes:
+    """
+    Verifica que GET /schedule/{id} exponga tiempos reales por capa BDI.
+    Criterio de aceptación: layer1-4 son enteros positivos; layer5 es None;
+    la suma de las 4 capas no supera elapsed_seconds * 1000 * 1.05 (tolerancia 5%).
+    """
+
+    @pytest.fixture(autouse=True)
+    def run_full_cycle(self, client):
+        resp = client.post(
+            "/api/v1/schedule",
+            json={"semester": "TEST", "solver_hint": "backtracking"},
+        )
+        assert resp.status_code == 202
+        self.schedule_id = resp.json()["schedule_id"]
+        self.post_data = resp.json()
+
+    def test_layer_times_present_in_response(self, client):
+        resp = client.get(f"/api/v1/schedule/{self.schedule_id}")
+        assert resp.status_code == 200
+        assert "layer_times" in resp.json()
+
+    def test_layer_times_keys(self, client):
+        resp = client.get(f"/api/v1/schedule/{self.schedule_id}")
+        lt = resp.json()["layer_times"]
+        assert lt is not None
+        for key in ("layer1_ms", "layer2_ms", "layer3_ms", "layer4_ms", "layer5_ms"):
+            assert key in lt, f"Falta clave: {key}"
+
+    def test_layer1_to_4_are_positive_integers_when_completed(self, client):
+        resp = client.get(f"/api/v1/schedule/{self.schedule_id}")
+        data = resp.json()
+        if data["status"] != "completed":
+            pytest.skip("Schedule no completado — no se puede verificar tiempos")
+        lt = data["layer_times"]
+        for key in ("layer1_ms", "layer2_ms", "layer3_ms", "layer4_ms"):
+            assert isinstance(lt[key], int), f"{key} debe ser int, es {type(lt[key])}"
+            assert lt[key] >= 0, f"{key} debe ser >= 0, es {lt[key]}"
+
+    def test_layer5_is_none_for_initial_generation(self, client):
+        resp = client.get(f"/api/v1/schedule/{self.schedule_id}")
+        data = resp.json()
+        if data["status"] != "completed":
+            pytest.skip("Schedule no completado")
+        assert data["layer_times"]["layer5_ms"] is None
+
+    def test_layer4_is_largest_when_completed(self, client):
+        """SA (Capa 4) debe ser la capa más lenta; si no lo es, hay bug en instrumentación."""
+        resp = client.get(f"/api/v1/schedule/{self.schedule_id}")
+        data = resp.json()
+        if data["status"] != "completed":
+            pytest.skip("Schedule no completado")
+        lt = data["layer_times"]
+        timed = {k: lt[k] for k in ("layer1_ms", "layer2_ms", "layer3_ms", "layer4_ms")}
+        max_key = max(timed, key=lambda k: timed[k])
+        assert max_key == "layer4_ms", (
+            f"Se esperaba layer4_ms como la más lenta, pero fue {max_key}. Tiempos: {timed}"
+        )
+
+    def test_sum_of_layers_within_elapsed_tolerance(self, client):
+        """
+        La suma layer1+2+3+4 no debe superar elapsed_seconds*1000 en más de un 5%.
+        La suma podría ser ligeramente menor porque elapsed incluye overhead de coordinación.
+        """
+        resp = client.get(f"/api/v1/schedule/{self.schedule_id}")
+        data = resp.json()
+        if data["status"] != "completed":
+            pytest.skip("Schedule no completado")
+        lt = data["layer_times"]
+        layer_sum = sum(lt[k] for k in ("layer1_ms", "layer2_ms", "layer3_ms", "layer4_ms"))
+        elapsed_ms = data["elapsed_seconds"] * 1000
+        assert layer_sum <= elapsed_ms * 1.05, (
+            f"Suma de capas ({layer_sum} ms) supera elapsed ({elapsed_ms:.0f} ms) + 5%"
+        )
+
+
+class TestListSchedules:
+    """
+    Tests para GET /api/v1/schedules.
+    Usa semestres únicos (LIST_TEST_*) para evitar interferencia con otros tests.
+    """
+
+    _ids: list[str]
+
+    @pytest.fixture(autouse=True)
+    def insert_and_cleanup(self, TestSessionLocal):
+        """Inserta registros conocidos con timestamps explícitos y los limpia al final."""
+        from datetime import datetime as dt
+
+        records = [
+            ScheduleModel(
+                schedule_id="list-test-001",
+                semester="LIST_TEST_2024A",
+                solver_used="tabu_search",
+                status="completed",
+                is_feasible=True,
+                utility_score=0.75,
+                elapsed_seconds=38.5,
+                created_at=dt(2026, 5, 10, 10, 0, 0),
+            ),
+            ScheduleModel(
+                schedule_id="list-test-002",
+                semester="LIST_TEST_2024A",
+                solver_used="milp",
+                status="completed",
+                is_feasible=True,
+                utility_score=0.72,
+                elapsed_seconds=45.2,
+                created_at=dt(2026, 5, 11, 12, 0, 0),
+            ),
+            ScheduleModel(
+                schedule_id="list-test-003",
+                semester="LIST_TEST_2025A",
+                solver_used="backtracking",
+                status="failed",
+                is_feasible=False,
+                utility_score=0.0,
+                elapsed_seconds=5.1,
+                created_at=dt(2026, 5, 9, 8, 0, 0),
+            ),
+        ]
+        self._ids = [r.schedule_id for r in records]
+
+        with TestSessionLocal() as session:
+            for r in records:
+                session.add(r)
+            session.commit()
+
+        yield
+
+        with TestSessionLocal() as session:
+            for sid in self._ids:
+                session.query(ScheduleModel).filter(
+                    ScheduleModel.schedule_id == sid
+                ).delete()
+            session.commit()
+
+    def test_list_schedules_returns_empty_when_no_schedules(self, client):
+        """Semestre inexistente devuelve lista vacía con paginación correcta."""
+        resp = client.get("/api/v1/schedules?semester=NONEXISTENT_XYZ")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["items"] == []
+        assert data["total"] == 0
+        assert data["limit"] == 20
+        assert data["offset"] == 0
+
+    def test_list_schedules_returns_most_recent_first(self, client):
+        """Los items se ordenan descendente por created_at (más reciente primero)."""
+        resp = client.get("/api/v1/schedules?semester=LIST_TEST_2024A")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 2
+        items = data["items"]
+        assert len(items) == 2
+        # list-test-002 (2026-05-11) debe preceder a list-test-001 (2026-05-10)
+        assert items[0]["schedule_id"] == "list-test-002"
+        assert items[1]["schedule_id"] == "list-test-001"
+
+    def test_list_schedules_filters_by_semester_and_status(self, client):
+        """Filtros combinados semester+status devuelven solo registros que coinciden."""
+        resp = client.get("/api/v1/schedules?semester=LIST_TEST_2025A&status=failed")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["items"][0]["schedule_id"] == "list-test-003"
+        assert data["items"][0]["semester"] == "LIST_TEST_2025A"
+        assert data["items"][0]["status"] == "failed"
