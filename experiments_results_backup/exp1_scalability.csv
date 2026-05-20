@@ -1,0 +1,16 @@
+size,run,seed,n_subjects,n_classrooms,n_timeslots,n_professors,n_assignments_needed,n_assignments_produced,elapsed_s,utility_score,solver_used,is_feasible,layer1_ms,layer2_ms,layer3_ms,layer4_ms,error
+S,1,100,10,6,20,8,12,12,0.55,0.286846,backtracking,True,21,8,19,497,
+S,2,200,10,6,20,8,11,11,0.387,0.302071,backtracking,True,14,2,6,360,
+S,3,300,10,6,20,8,10,10,0.519,0.327175,backtracking,True,20,2,6,484,
+M,1,100,30,15,30,15,35,35,2.419,0.362689,backtracking,True,33,123,1031,1224,
+M,2,200,30,15,30,15,38,38,3.826,0.33319,backtracking,True,29,122,847,2821,
+M,3,300,30,15,30,15,39,39,4.223,0.351336,backtracking,True,66,202,1720,2228,
+L,1,100,60,25,40,25,72,72,12.363,0.392008,tabu_search,True,51,906,1068,10329,
+L,2,200,60,25,40,25,76,76,11.962,0.371672,tabu_search,True,52,1172,950,9778,
+L,3,300,60,25,40,25,72,72,19.672,0.38489,tabu_search,True,68,1050,1047,17499,
+XL,1,100,100,40,50,40,125,125,43.1,0.384996,tabu_search,True,77,6081,2508,34421,
+XL,2,200,100,40,50,40,128,128,66.57,0.365693,tabu_search,True,111,7140,2849,56458,
+XL,3,300,100,40,50,40,128,128,70.056,0.386307,tabu_search,True,80,6323,3199,60440,
+XXL,1,100,150,60,60,55,192,0,1354.742,0.0,milp,False,134,27017,1327589,,
+XXL,2,200,150,60,60,55,181,0,349.497,0.0,milp,False,211,27389,321895,,
+XXL,3,300,150,60,60,55,189,0,,,,False,,,,,timeout after 1800s
