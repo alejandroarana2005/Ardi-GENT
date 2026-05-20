@@ -65,7 +65,7 @@ _uvicorn_proc: subprocess.Popen | None = None
 # ── Modo local: levantar uvicorn + SQLite ─────────────────────────────────────
 
 def _seed_sqlite(db_path: Path) -> None:
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
     from app.database.models import (
@@ -75,16 +75,18 @@ def _seed_sqlite(db_path: Path) -> None:
     )
     from tests.fixtures.sample_data import build_sample_instance
 
+    # Eliminar la DB anterior para garantizar esquema actualizado.
+    # create_all() no altera tablas existentes, por lo que un archivo
+    # antiguo (antes de layer1_ms…layer5_ms) causaría OperationalError.
+    if db_path.exists():
+        db_path.unlink()
+
     engine = create_engine(
         f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
-
-    with engine.connect() as conn:
-        if conn.execute(text("SELECT COUNT(*) FROM subjects")).scalar() > 0:
-            return  # ya sembrado
 
     SL = sessionmaker(bind=engine)
     inst = build_sample_instance(semester="2024-A")
@@ -151,20 +153,23 @@ def start_local_stack() -> None:
     db_path.parent.mkdir(exist_ok=True)
 
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
-    os.environ["LOG_LEVEL"]    = "ERROR"
+    os.environ["LOG_LEVEL"]    = "INFO"
 
     with console.status("[dim]Preparando base de datos demo...[/dim]", spinner="dots"):
         _seed_sqlite(db_path)
 
     env = os.environ.copy()
+    _log_path = ROOT / "demo_output" / "uvicorn_debug.log"
+    _log_fd   = open(_log_path, "w", encoding="utf-8")
     _uvicorn_proc = subprocess.Popen(
         [
             sys.executable, "-m", "uvicorn", "app.main:app",
-            "--host", "127.0.0.1", f"--port={BASE_PORT}", "--log-level=error",
+            "--host", "127.0.0.1", f"--port={BASE_PORT}", "--log-level=info",
         ],
         cwd=str(ROOT), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=_log_fd, stderr=_log_fd,
     )
+    atexit.register(lambda: _log_fd.close())
     atexit.register(lambda: _uvicorn_proc.terminate() if _uvicorn_proc else None)
 
     for _ in range(24):
