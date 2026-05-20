@@ -36,12 +36,15 @@ logger = logging.getLogger("[HAIA Layer4-SA]")
 class SimulatedAnnealing:
     """Recocido Simulado sobre solución factible de la Capa 3."""
 
-    def __init__(self, config: HAIAConfig) -> None:
+    def __init__(self, config: HAIAConfig, seed: int | None = None) -> None:
         self.T0 = config.sa_t0
         self.T_min = config.sa_t_min
         self.alpha = config.sa_alpha
         self.iters_per_T = config.sa_iters_per_t
         self.weights = config.utility_weights
+        # RNG aislado: garantiza reproducibilidad sin afectar ni depender
+        # del estado global del módulo random.
+        self.rng: random.Random = random.Random(seed)
 
     def optimize(
         self, assignments: list[Assignment], instance: SchedulingInstance
@@ -103,7 +106,7 @@ class SimulatedAnnealing:
                 neighbor_score = calc.compute(neighbor, instance)
                 delta = neighbor_score - current_score
 
-                if delta > 0 or random.random() < math.exp(delta / T):
+                if delta > 0 or self.rng.random() < math.exp(delta / T):
                     current = neighbor
                     current_score = neighbor_score
                     thermodynamic_accepted += 1
@@ -181,7 +184,7 @@ class SimulatedAnnealing:
         self, assignments: list[Assignment], instance: SchedulingInstance
     ) -> tuple[list[Assignment], list[int]] | None:
         """30% SC4-spread, 70% swap aleatorio."""
-        if random.random() < 0.3:
+        if self.rng.random() < 0.3:
             return self._move_to_spread_professor_hours(assignments, instance)
         return self._swap_two_assignments(assignments, instance)
 
@@ -192,7 +195,7 @@ class SimulatedAnnealing:
         if len(assignments) < 2:
             return None
 
-        idx1, idx2 = random.sample(range(len(assignments)), 2)
+        idx1, idx2 = self.rng.sample(range(len(assignments)), 2)
         a1, a2 = assignments[idx1], assignments[idx2]
 
         neighbor = list(assignments)
@@ -244,7 +247,7 @@ class SimulatedAnnealing:
         if not candidates:
             return self._swap_two_assignments(assignments, instance)
 
-        idx = random.choice(candidates)
+        idx = self.rng.choice(candidates)
         a = assignments[idx]
         current_ts = ts_map.get(a.timeslot_code)
         if not current_ts:
@@ -282,7 +285,7 @@ class SimulatedAnnealing:
         if not candidate_ts:
             return self._swap_two_assignments(assignments, instance)
 
-        new_ts = random.choice(candidate_ts)
+        new_ts = self.rng.choice(candidate_ts)
         neighbor = list(assignments)
         neighbor[idx] = Assignment(
             subject_code=a.subject_code,

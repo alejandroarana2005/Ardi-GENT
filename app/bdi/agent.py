@@ -45,6 +45,7 @@ class HAIAAgent:
         semester: str,
         schedule_id: Optional[str] = None,
         solver_hint: Optional[str] = None,
+        sa_seed: Optional[int] = None,
     ) -> SchedulingResult:
         """
         Pipeline principal BDI:
@@ -181,7 +182,7 @@ class HAIAAgent:
             from app.layer4_optimization.simulated_annealing import SimulatedAnnealing
             from app.layer4_optimization.utility_function import UtilityCalculator
 
-            sa = SimulatedAnnealing(config=self.config)
+            sa = SimulatedAnnealing(config=self.config, seed=sa_seed)
             optimized = sa.optimize(assignments, instance)
 
             calc = UtilityCalculator(weights=self.config.utility_weights)
